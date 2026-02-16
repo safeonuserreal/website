@@ -202,7 +202,6 @@ function AfrikaTopographieLernspiel() {
     const [tool, setTool] = useState("pen");
     const [penSize, setPenSize] = useState(6);
     const [finished, setFinished] = useState(false);
-    const [showReferenceOverlay, setShowReferenceOverlay] = useState(false);
     const [placements, setPlacements] = useState({});
     const mapRef = useRef(null);
     const drawCanvasRef = useRef(null);
@@ -525,7 +524,6 @@ function AfrikaTopographieLernspiel() {
     }
     function resetAll() {
         setFinished(false);
-        setShowReferenceOverlay(false);
         setPlacements({});
         clearDrawing();
         setShowRegions(false);
@@ -588,7 +586,7 @@ function AfrikaTopographieLernspiel() {
                         "Zieh die L\u00E4nder-Karten auf die Karte. Zeichne dann grob Grenzen ein. Klick auf",
                         " ",
                         React.createElement("span", { className: "text-zinc-200" }, "Fertig"),
-                        " f\u00FCr einen Vergleich.")),
+                        " f\u00FCr die Auswertung.")),
                 React.createElement("div", { className: "flex flex-wrap gap-2" },
                     React.createElement("button", { className: `px-3 py-2 rounded-xl border ${showRegions ? "border-white/30 bg-white/10" : "border-white/10 bg-white/5"} hover:bg-white/10 transition`, onClick: () => setShowRegions((s) => !s), disabled: finished, title: "Regionen-Hilfe ein/aus" }, "Regionen"),
                     React.createElement("button", { className: `px-3 py-2 rounded-xl border ${tool === "pen" ? "border-white/30 bg-white/10" : "border-white/10 bg-white/5"} hover:bg-white/10 transition`, onClick: () => setTool("pen"), disabled: finished, title: "Stift" }, "\u270F\uFE0F Stift"),
@@ -599,7 +597,7 @@ function AfrikaTopographieLernspiel() {
                     React.createElement("button", { className: "px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition", onClick: undo, disabled: finished, title: "Undo" }, "\u21A9\uFE0F Undo"),
                     React.createElement("button", { className: "px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition", onClick: clearDrawing, disabled: finished, title: "Zeichnung l\u00F6schen" }, "\uD83D\uDDD1\uFE0F Zeichnung"),
                     !finished ? (React.createElement("button", { className: "px-3 py-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 hover:bg-emerald-400/15 transition", onClick: finish, title: "Auswertung anzeigen" }, "\u2705 Fertig")) : (React.createElement("button", { className: "px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition", onClick: resetAll, title: "Neu starten" }, "\uD83D\uDD04 Neu")),
-                    React.createElement("button", { className: `px-3 py-2 rounded-xl border ${showReferenceOverlay ? "border-sky-300/40 bg-sky-300/15" : "border-white/10 bg-white/5"} hover:bg-white/10 transition disabled:opacity-50 disabled:cursor-not-allowed`, onClick: () => setShowReferenceOverlay((v) => !v), disabled: !finished, title: "Musterl\u00F6sung auf der Karte ein/ausblenden" }, "\uD83E\uDDED Vergleich Musterl\u00F6sung"))),
+                    ))),
             React.createElement("main", { className: "mt-5 grid grid-cols-1 lg:grid-cols-12 gap-4" },
                 React.createElement("section", { className: "lg:col-span-4 rounded-2xl border border-white/10 bg-white/5 p-4" },
                     React.createElement("div", { className: "flex items-center justify-between gap-3" },
@@ -655,7 +653,7 @@ function AfrikaTopographieLernspiel() {
                         React.createElement("ol", { className: "list-decimal pl-4 mt-2 space-y-1" },
                             React.createElement("li", null, "Karte ziehen \u2192 auf Afrika ablegen."),
                             React.createElement("li", null, "Optional: Grenzen grob einzeichnen (Stift/Radierer)."),
-                            React.createElement("li", null, "\u201EFertig\u201C f\u00FCr Vergleich + Score."))))),
+                            React.createElement("li", null, "\u201EFertig\u201C f\u00FCr Auswertung + Score."))))),
                 React.createElement("section", { className: "lg:col-span-8 rounded-2xl border border-white/10 bg-white/5 p-4" },
                     React.createElement("div", { className: "flex items-center justify-between" },
                         React.createElement("h2", { className: "text-lg font-semibold" }, "Karte"),
@@ -674,16 +672,9 @@ function AfrikaTopographieLernspiel() {
                                     React.createElement("div", { className: "px-2 py-1 rounded-xl bg-zinc-950/70 border border-white/10 text-xs text-zinc-100 shadow" }, c.name)));
                             })),
                             React.createElement("canvas", { ref: drawCanvasRef, className: `absolute inset-0 ${finished ? "pointer-events-none" : ""}`, onMouseDown: onPointerDown, onMouseMove: onPointerMove, onMouseUp: onPointerUp, onMouseLeave: onPointerUp, onTouchStart: onPointerDown, onTouchMove: onPointerMove, onTouchEnd: onPointerUp }),
-                            React.createElement("canvas", { ref: refCanvasRef, className: `absolute inset-0 pointer-events-none transition-opacity duration-200 ${finished && showReferenceOverlay ? "opacity-65" : "opacity-0"}` }),
+                            React.createElement("canvas", { ref: refCanvasRef, className: "hidden" }),
                             solutionOverlay()),
-                        finished && stats && (React.createElement("div", { className: "mt-4 grid grid-cols-1 md:grid-cols-2 gap-3" },
-                            React.createElement("div", { className: "rounded-2xl border border-white/10 bg-zinc-900/40 p-4" },
-                                React.createElement("div", { className: "text-sm font-semibold" }, "Vergleich \u2013 Grenzen"),
-                                React.createElement("div", { className: "text-xs text-zinc-400 mt-1" }, "Links: deine Zeichnung (auf Karte). Rechts: Referenz (vereinfacht). Score basiert auf \u00C4hnlichkeit."),
-                                React.createElement("div", { className: "mt-3 grid grid-cols-2 gap-2" },
-                                    React.createElement(MiniPreview, { source: "user", drawCanvasRef: drawCanvasRef }),
-                                    React.createElement(MiniPreview, { source: "ref", refCanvasRef: refCanvasRef })),
-                                React.createElement("div", { className: "mt-3 text-xs text-zinc-500" }, "Hinweis: Referenz ist absichtlich grob, damit du Feedback bekommst, ohne pixelperfekt zeichnen zu m\u00FCssen.")),
+                        finished && stats && (React.createElement("div", { className: "mt-4 grid grid-cols-1 gap-3" },
                             React.createElement("div", { className: "rounded-2xl border border-white/10 bg-zinc-900/40 p-4" },
                                 React.createElement("div", { className: "text-sm font-semibold" }, "N\u00E4chste Runde"),
                                 React.createElement("ul", { className: "mt-2 text-sm text-zinc-300 space-y-1 list-disc pl-4" },
@@ -693,45 +684,9 @@ function AfrikaTopographieLernspiel() {
                                     React.createElement("li", null, "Erweiterungsidee: F\u00FCr echte L\u00E4nder-Grenzen kann man GeoJSON (z.B. Natural Earth) einbinden und daraus echte Polygone als Drop-Zonen + Referenzgrenzen zeichnen.")),
                                 React.createElement("div", { className: "mt-3 flex gap-2" },
                                     React.createElement("button", { className: "px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition", onClick: resetAll }, "\uD83D\uDD04 Neu starten"),
-                                    React.createElement("button", { className: "px-3 py-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 hover:bg-emerald-400/15 transition", onClick: () => setFinished(false) }, "\u270F\uFE0F Weiter \u00FCben")))))))),
+                                    React.createElement("button", { className: "px-3 py-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 hover:bg-emerald-400/15 transition", onClick: () => setFinished(false) }, "\u270F\uFE0F Weiter \u00FCben"))))))),
             React.createElement("footer", { className: "mt-6 text-xs text-zinc-500" },
                 React.createElement("div", null, "Erweiterungsidee: F\u00FCr echte L\u00E4nder-Grenzen kann man GeoJSON (z.B. Natural Earth) einbinden und daraus echte Polygone als Drop-Zonen + Referenzgrenzen zeichnen.")))));
-}
-function MiniPreview({ source, drawCanvasRef, refCanvasRef, }) {
-    const canvasRef = useRef(null);
-    useEffect(() => {
-        const out = canvasRef.current;
-        if (!out)
-            return;
-        const src = source === "user" ? drawCanvasRef === null || drawCanvasRef === void 0 ? void 0 : drawCanvasRef.current : refCanvasRef === null || refCanvasRef === void 0 ? void 0 : refCanvasRef.current;
-        if (!src)
-            return;
-        const w = 380;
-        const h = 260;
-        out.width = w;
-        out.height = h;
-        const octx = out.getContext("2d");
-        if (!octx)
-            return;
-        octx.clearRect(0, 0, w, h);
-        octx.fillStyle = "rgba(9,9,11,1)";
-        octx.fillRect(0, 0, w, h);
-        const sx = src.width;
-        const sy = src.height;
-        if (sx <= 0 || sy <= 0)
-            return;
-        const scale = Math.min(w / sx, h / sy);
-        const dx = (w - sx * scale) / 2;
-        const dy = (h - sy * scale) / 2;
-        octx.globalAlpha = 1;
-        octx.drawImage(src, dx, dy, sx * scale, sy * scale);
-        octx.strokeStyle = "rgba(255,255,255,0.12)";
-        octx.lineWidth = 2;
-        octx.strokeRect(1, 1, w - 2, h - 2);
-    }, [source, drawCanvasRef, refCanvasRef]);
-    return (React.createElement("div", { className: "rounded-2xl border border-white/10 bg-white/5 p-3" },
-        React.createElement("div", { className: "text-xs text-zinc-400" }, source === "user" ? "Dein Bild" : "Perfekt (Referenz)"),
-        React.createElement("canvas", { ref: canvasRef, className: "mt-2 w-full rounded-xl" })));
 }
 // ---------------------------
 // Mini-Tests (ohne Test-Framework)
