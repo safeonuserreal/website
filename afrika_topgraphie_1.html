@@ -1,1170 +1,201 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-
-/**
- * Afrika Topographie Lernspiel (MVP)
- * - Dark Mode
- * - Länder-Karten per Drag & Drop auf Karte platzieren
- * - Grenzen per Zeichnen (Canvas) einzeichnen
- * - "Fertig" zeigt Vergleich mit Referenz + ungefähre Score-Schätzung
- *
- * Fix für deinen SyntaxError:
- * - Die Datei war am Ende abgeschnitten (MiniPreview: `const sx = src.width ...` ohne Abschluss).
- * - Hier ist eine vollständige, syntaktisch korrekte Version als 1 Datei.
- *
- * Hinweis:
- * - "Canvas" hier = HTML <canvas> fürs Zeichnen (im Spiel). Du meintest sehr wahrscheinlich ChatGPTs Canvas-Editor.
- */
-
-// ---------------------------
-// Daten (leicht erweiterbar)
-// ---------------------------
-
-type CountryBase = {
-  id: string;
-  name: string;
-  region: string;
-  // Grobe "Land-Mitte" (kann später auf Hauptstädte umgestellt werden)
-  lat: number;
-  lon: number;
-};
-
-type Country = CountryBase & {
-  // Zielposition im Kartencontainer (0..1)
-  target01: [number, number];
-};
-
-type Placement = Record<string, { x: number; y: number }>; // 0..1
-
-// Grobe Zentren (Lat/Lon). Wenn du willst, kann das später auf HAUPTSTÄDTE umgestellt werden.
-const BASE_COUNTRIES: CountryBase[] = [
-  // Nordafrika
-  { id: "ma", name: "Marokko", region: "Nordafrika", lat: 31.8, lon: -7.1 },
-  { id: "dz", name: "Algerien", region: "Nordafrika", lat: 28.0, lon: 2.6 },
-  { id: "tn", name: "Tunesien", region: "Nordafrika", lat: 34.0, lon: 9.0 },
-  { id: "ly", name: "Libyen", region: "Nordafrika", lat: 27.0, lon: 17.0 },
-  { id: "eg", name: "Ägypten", region: "Nordafrika", lat: 26.8, lon: 30.8 },
-
-  // Westafrika
-  { id: "sn", name: "Senegal", region: "Westafrika", lat: 14.5, lon: -14.5 },
-  { id: "ml", name: "Mali", region: "Westafrika", lat: 17.5, lon: -3.5 },
-  { id: "ci", name: "Elfenbeinküste", region: "Westafrika", lat: 7.6, lon: -5.6 },
-  { id: "gh", name: "Ghana", region: "Westafrika", lat: 7.9, lon: -1.0 },
-  { id: "ng", name: "Nigeria", region: "Westafrika", lat: 9.1, lon: 8.7 },
-
-  // Zentralafrika
-  { id: "cm", name: "Kamerun", region: "Zentralafrika", lat: 5.7, lon: 12.8 },
-  { id: "ga", name: "Gabun", region: "Zentralafrika", lat: -0.8, lon: 11.6 },
-  { id: "cg", name: "Republik Kongo", region: "Zentralafrika", lat: -0.7, lon: 15.2 },
-  { id: "cd", name: "DR Kongo", region: "Zentralafrika", lat: -2.9, lon: 23.7 },
-
-  // Ostafrika
-  { id: "et", name: "Äthiopien", region: "Ostafrika", lat: 9.1, lon: 40.5 },
-  { id: "so", name: "Somalia", region: "Ostafrika", lat: 5.2, lon: 46.2 },
-  { id: "ke", name: "Kenia", region: "Ostafrika", lat: 0.1, lon: 37.9 },
-  { id: "tz", name: "Tansania", region: "Ostafrika", lat: -6.3, lon: 34.8 },
-
-  // Südliches Afrika
-  { id: "na", name: "Namibia", region: "Südliches Afrika", lat: -22.5, lon: 17.1 },
-  { id: "bw", name: "Botswana", region: "Südliches Afrika", lat: -22.0, lon: 24.7 },
-  { id: "zw", name: "Simbabwe", region: "Südliches Afrika", lat: -19.0, lon: 29.2 },
-  { id: "za", name: "Südafrika", region: "Südliches Afrika", lat: -29.0, lon: 24.0 },
-];
-
-// Grobe Grenzsegmente (nur als Referenz fürs Feedback)
-// (Optional: später durch GeoJSON echte Grenzen zeichnen)
-const BORDER_LINES: Array<Array<[number, number]>> = [
-  [
-    [0.27, 0.22],
-    [0.36, 0.23],
-    [0.44, 0.24],
-    [0.52, 0.25],
-    [0.62, 0.25],
-    [0.72, 0.25],
-  ],
-  [
-    [0.23, 0.4],
-    [0.26, 0.46],
-    [0.31, 0.5],
-    [0.36, 0.53],
-    [0.42, 0.54],
-    [0.48, 0.54],
-  ],
-  [
-    [0.46, 0.58],
-    [0.53, 0.6],
-    [0.58, 0.66],
-    [0.57, 0.74],
-    [0.51, 0.75],
-  ],
-  [
-    [0.66, 0.56],
-    [0.73, 0.55],
-    [0.8, 0.57],
-    [0.84, 0.62],
-    [0.8, 0.64],
-    [0.74, 0.63],
-  ],
-  [
-    [0.47, 0.85],
-    [0.54, 0.86],
-    [0.61, 0.86],
-    [0.66, 0.89],
-    [0.64, 0.94],
-    [0.56, 0.97],
-    [0.5, 0.96],
-  ],
-];
-
-// ---------------------------
-// Utils
-// ---------------------------
-
-function clamp(n: number, a: number, b: number) {
-  return Math.max(a, Math.min(b, n));
-}
-
-function dist(a: [number, number], b: [number, number]) {
-  const dx = a[0] - b[0];
-  const dy = a[1] - b[1];
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-function nicePct(n: number) {
-  return `${Math.round(n)}%`;
-}
-
-function groupBy<T>(arr: T[], keyFn: (t: T) => string) {
-  return arr.reduce<Record<string, T[]>>((acc, item) => {
-    const k = keyFn(item);
-    acc[k] = acc[k] || [];
-    acc[k].push(item);
-    return acc;
-  }, {});
-}
-
-type Mask = { mask: Uint8Array; width: number; height: number };
-
-function imageDataToMask(imgData: ImageData, alphaThreshold = 10): Mask {
-  const { data, width, height } = imgData;
-  const mask = new Uint8Array(width * height);
-  for (let i = 0; i < width * height; i++) {
-    const a = data[i * 4 + 3];
-    mask[i] = a > alphaThreshold ? 1 : 0;
-  }
-  return { mask, width, height };
-}
-
-function maskF1(userMask: Mask, refMask: Mask) {
-  const { mask: u, width, height } = userMask;
-  const { mask: r } = refMask;
-  let tp = 0,
-    fp = 0,
-    fn = 0;
-  for (let i = 0; i < width * height; i++) {
-    if (u[i] && r[i]) tp++;
-    else if (u[i] && !r[i]) fp++;
-    else if (!u[i] && r[i]) fn++;
-  }
-  const precision = tp + fp === 0 ? 0 : tp / (tp + fp);
-  const recall = tp + fn === 0 ? 0 : tp / (tp + fn);
-  const f1 = precision + recall === 0 ? 0 : (2 * precision * recall) / (precision + recall);
-  return { f1, precision, recall };
-}
-
-// ---------------------------
-// Afrika Outline (ohne Madagaskar)
-// ---------------------------
-
-const AFRICA_SILHOUETTE_PATH =
-  "M263.1,474.6L255.7,469.6L254.5,471.1L253.2,470.0L253.8,465.9L249.9,462.3L252.9,458.5L252.6,453.5L244.3,435.4L237.8,428.3L234.9,421.0L231.3,404.4L231.6,394.9L216.2,367.7L216.2,354.7" +
-  "L220.7,340.5L227.5,332.9L227.8,326.7L223.0,316.3L225.7,312.8L219.2,300.0L218.6,295.0L204.4,278.8L199.4,269.6L202.3,267.2L204.1,260.1L202.9,257.2L206.5,247.1L204.1,243.9L198.4,239.9" +
-  "L185.1,241.7L177.4,231.0L171.5,229.0L153.1,233.1L140.4,239.0L126.2,236.0L107.3,241.4L98.7,236.9L85.7,226.3L78.6,223.3L74.3,209.6L68.6,206.8L63.7,202.2L63.3,199.1L59.1,198.5L56.0,194.8L57.2,188.0L52.5,181.2L57.2,175.6L60.2,160.2L57.2,154.3L59.3,149.0L54.8,143.7L55.4,138.1L67.0,121.5L69.3,112.0L74.3,108.5L76.7,102.3L85.7,98.6L95.6,88.7L95.0,79.5L98.6,70.7L103.8,65.5L112.8,60.6L116.6,50.3L120.6,47.2L125.0,52.8L134.8,51.6L140.1,53.7L145.7,48.9L150.5,48.3L159.0,43.0L174.7,40.4L181.8,42.4L186.8,39.5L190.4,40.9L193.3,39.5L195.7,41.2L206.3,37.7L210.2,41.5L213.1,39.5L214.2,40.5L210.6,46.7L214.5,53.8L208.0,60.9L209.3,62.8L213.4,63.1L214.9,66.1L220.8,69.0L227.0,68.4L236.5,71.4L239.4,77.9L247.4,79.7L257.5,85.6L260.1,85.3L263.5,81.3L262.7,74.2L272.3,68.1L279.6,69.3L282.3,73.2L291.2,74.1L293.2,77.6L298.0,76.7L313.9,81.7L325.2,76.7L330.5,77.3L334.6,80.3L343.5,79.1L348.1,91.3L344.8,102.9L343.5,103.9L340.8,101.8L340.4,103.5L352.8,126.2L352.5,132.4L359.3,137.8L362.3,156.7L370.0,163.8L373.8,175.9L382.5,180.8L394.2,192.7L395.7,196.9L393.6,198.7L400.6,205.3L407.6,202.6L412.4,203.5L417.1,200.6L426.0,200.6L433.7,198.5L435.7,196.1L440.0,197.8L437.7,211.7L422.0,238.9L410.6,251.4L394.2,263.1L385.0,274.9L378.2,280.5L372.0,291.8L370.0,299.2L374.1,304.5L372.6,312.5L375.3,321.0L379.7,324.6L379.1,338.5L381.2,348.8L373.1,360.8L360.4,366.7L355.0,373.5L346.9,379.6L346.3,381.9L351.3,392.6L351.0,404.7L347.3,408.7L335.4,414.7L336.6,421.8L333.6,432.2L326.8,438.7L321.2,449.0L303.6,465.4L296.5,466.6L290.6,470.2L278.2,468.7Z";
-
-// Transform-Parameter: wie stark der Afrika-Umriss in seiner eigenen ViewBox skaliert wird.
-const AFRICA_GROUP_SCALE = 0.98;
-
-// Sehr grobe Afrika-Bounds (Lon/Lat) für Projektion in die 512x512 ViewBox.
-// (später: echte Projektion + Länder-Polygone via GeoJSON)
-const AFRICA_LONLAT_BOUNDS = {
-  minLon: -17.6,
-  maxLon: 51.6,
-  minLat: -35.2,
-  maxLat: 37.6,
-};
-
-function lonLatToViewBoxXY(lon: number, lat: number): [number, number] {
-  const { minLon, maxLon, minLat, maxLat } = AFRICA_LONLAT_BOUNDS;
-
-  const x01 = (lon - minLon) / (maxLon - minLon);
-  const y01 = (maxLat - lat) / (maxLat - minLat); // y nach unten
-
-  const x = clamp(x01, 0, 1) * 512;
-  const y = clamp(y01, 0, 1) * 512;
-  return [x, y];
-}
-
-function applyGroupScaleAroundCenter(x: number, y: number, s: number): [number, number] {
-  // Skalierung um (256,256)
-  const cx = 256;
-  const cy = 256;
-  return [cx + (x - cx) * s, cy + (y - cy) * s];
-}
-
-function viewBoxPointToContainer01(
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  preserve: "bottom" | "center" = "bottom"
-): [number, number] {
-  // Wie SVG preserveAspectRatio="xMidYMax meet" skaliert:
-  const baseScale = Math.min(w / 512, h / 512);
-  const ox = (w - 512 * baseScale) / 2;
-  const oy = preserve === "bottom" ? h - 512 * baseScale : (h - 512 * baseScale) / 2;
-
-  const [gx, gy] = applyGroupScaleAroundCenter(x, y, AFRICA_GROUP_SCALE);
-
-  const px = (ox + gx * baseScale) / w;
-  const py = (oy + gy * baseScale) / h;
-  return [clamp(px, 0, 1), clamp(py, 0, 1)];
-}
-
-function viewBoxRectToContainer01(
-  x: number,
-  y: number,
-  rw: number,
-  rh: number,
-  w: number,
-  h: number,
-  preserve: "bottom" | "center" = "bottom"
-) {
-  const [x1, y1] = viewBoxPointToContainer01(x, y, w, h, preserve);
-  const [x2, y2] = viewBoxPointToContainer01(x + rw, y + rh, w, h, preserve);
-  return {
-    x: x1,
-    y: y1,
-    w: clamp(x2 - x1, 0, 1),
-    h: clamp(y2 - y1, 0, 1),
-  };
-}
-
-// Region-Blöcke in VIEWBOX-Koordinaten (512x512).
-// Anpassungen: Nordafrika etwas weniger breit; Ostafrika schmaler (User-Feedback).
-const REGION_BLOCKS_VB: Array<{ r: string; x: number; y: number; w: number; h: number }> = [
-  { r: "Nordafrika", x: 95, y: 18, w: 330, h: 95 }, // schmaler als vorher
-  { r: "Westafrika", x: 45, y: 150, w: 210, h: 210 },
-  { r: "Zentralafrika", x: 210, y: 235, w: 150, h: 150 },
-  { r: "Ostafrika", x: 345, y: 150, w: 130, h: 270 },
-  { r: "Südliches Afrika", x: 220, y: 370, w: 190, h: 120 },
-];
-
-// ---------------------------
-// Hauptkomponente
-// ---------------------------
-
-export default function AfrikaTopographieLernspiel() {
-  const [query, setQuery] = useState("");
-  const [showRegions, setShowRegions] = useState(false);
-  const [tool, setTool] = useState<"pen" | "eraser">("pen");
-  const [penSize, setPenSize] = useState(6);
-  const [finished, setFinished] = useState(false);
-
-  const [placements, setPlacements] = useState<Placement>({});
-
-  const mapRef = useRef<HTMLDivElement | null>(null);
-  const drawCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const refCanvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  const [mapSize, setMapSize] = useState<{ w: number; h: number }>({ w: 800, h: 600 });
-
-  const drawingRef = useRef<{ isDown: boolean; last: { x: number; y: number } | null; history: ImageData[] }>({
-    isDown: false,
-    last: null,
-    history: [],
-  });
-
-  // Länder + berechnete Zielpunkte
-  const countries: Country[] = useMemo(() => {
-    const w = mapSize.w || 800;
-    const h = mapSize.h || 600;
-    return BASE_COUNTRIES.map((c) => {
-      const [vx, vy] = lonLatToViewBoxXY(c.lon, c.lat);
-      const target01 = viewBoxPointToContainer01(vx, vy, w, h, "bottom");
-      return { ...c, target01 };
-    });
-  }, [mapSize.w, mapSize.h]);
-
-  const filteredCards = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return countries;
-    return countries.filter((c) => c.name.toLowerCase().includes(q) || c.region.toLowerCase().includes(q));
-  }, [query, countries]);
-
-  const placedIds = useMemo(() => new Set(Object.keys(placements)), [placements]);
-
-  // ----- Canvas setup (resize) -----
-  useEffect(() => {
-    const resize = () => {
-      const mapEl = mapRef.current;
-      const draw = drawCanvasRef.current;
-      const refc = refCanvasRef.current;
-      if (!mapEl || !draw || !refc) return;
-
-      const rect = mapEl.getBoundingClientRect();
-      setMapSize({ w: rect.width, h: rect.height });
-
-      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-
-      draw.width = Math.floor(rect.width * dpr);
-      draw.height = Math.floor(rect.height * dpr);
-      draw.style.width = `${rect.width}px`;
-      draw.style.height = `${rect.height}px`;
-
-      refc.width = Math.floor(rect.width * dpr);
-      refc.height = Math.floor(rect.height * dpr);
-      refc.style.width = `${rect.width}px`;
-      refc.style.height = `${rect.height}px`;
-
-      drawReference(refc);
-
-      // Clear user drawing on resize (MVP)
-      const ctx = draw.getContext("2d");
-      if (ctx) ctx.clearRect(0, 0, draw.width, draw.height);
-      drawingRef.current.history = [];
-    };
-
-    resize();
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  function drawReference(canvas: HTMLCanvasElement) {
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const rect = canvas.getBoundingClientRect();
-    const dpr = canvas.width / (rect.width || canvas.width);
-
-    const w = rect.width;
-    const h = rect.height;
-
-    ctx.save();
-    ctx.scale(dpr, dpr);
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-
-    // borders (still normalized to container; später: echte Grenzen via GeoJSON)
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = "rgba(255,255,255,0.55)";
-    for (const line of BORDER_LINES) {
-      ctx.beginPath();
-      line.forEach(([nx, ny], idx) => {
-        const x = nx * w;
-        const y = ny * h;
-        if (idx === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.stroke();
-    }
-
-    // outline reference: exakt wie SVG (xMidYMax meet + group scale)
-    const baseScale = Math.min(w / 512, h / 512);
-    const ox = (w - 512 * baseScale) / 2;
-    const oy = h - 512 * baseScale;
-
-    try {
-      const p = new Path2D(AFRICA_SILHOUETTE_PATH);
-      ctx.save();
-      ctx.translate(ox, oy);
-      ctx.scale(baseScale, baseScale);
-      ctx.translate(256, 256);
-      ctx.scale(AFRICA_GROUP_SCALE, AFRICA_GROUP_SCALE);
-      ctx.translate(-256, -256);
-
-      ctx.lineWidth = 2 / baseScale;
-      ctx.strokeStyle = "rgba(255,255,255,0.38)";
-      ctx.stroke(p);
-      ctx.restore();
-    } catch {
-      // ignore (z.B. wenn Path2D nicht verfügbar ist)
-    }
-
-    ctx.restore();
-  }
-
-  // ----- Drag & Drop -----
-  function onDragStart(e: React.DragEvent, id: string) {
-    if (finished) return;
-    e.dataTransfer.setData("text/plain", id);
-    e.dataTransfer.effectAllowed = "move";
-  }
-
-  function onDrop(e: React.DragEvent) {
-    if (finished) return;
-    e.preventDefault();
-    const id = e.dataTransfer.getData("text/plain");
-    if (!id) return;
-
-    const mapEl = mapRef.current;
-    if (!mapEl) return;
-    const rect = mapEl.getBoundingClientRect();
-
-    const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-    const y = clamp((e.clientY - rect.top) / rect.height, 0, 1);
-
-    setPlacements((prev) => ({ ...prev, [id]: { x, y } }));
-  }
-
-  function onDragOver(e: React.DragEvent) {
-    if (finished) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-  }
-
-  function removePlacement(id: string) {
-    if (finished) return;
-    setPlacements((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  }
-
-  // ----- Drawing -----
-  function getCanvasCtx() {
-    const canvas = drawCanvasRef.current;
-    return canvas ? canvas.getContext("2d") : null;
-  }
-
-  function snapshotCanvas() {
-    const canvas = drawCanvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return null;
-    return ctx.getImageData(0, 0, canvas.width, canvas.height);
-  }
-
-  function restoreSnapshot(imgData: ImageData | null) {
-    const canvas = drawCanvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx || !imgData) return;
-    ctx.putImageData(imgData, 0, 0);
-  }
-
-  function pushHistory() {
-    const snap = snapshotCanvas();
-    if (!snap) return;
-    const h = drawingRef.current.history;
-    h.push(snap);
-    if (h.length > 20) h.shift();
-  }
-
-  function undo() {
-    if (finished) return;
-    const h = drawingRef.current.history;
-    if (!h.length) {
-      clearDrawing();
-      return;
-    }
-    h.pop();
-    const last = h[h.length - 1];
-    restoreSnapshot(last ?? null);
-    if (!last) clearDrawing();
-  }
-
-  function clearDrawing() {
-    if (finished) return;
-    const canvas = drawCanvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawingRef.current.history = [];
-  }
-
-  function canvasPointFromEvent(e: any) {
-    const canvas = drawCanvasRef.current;
-    const mapEl = mapRef.current;
-    if (!canvas || !mapEl) return null;
-
-    const rect = mapEl.getBoundingClientRect();
-    const dpr = canvas.width / rect.width;
-
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-
-    return {
-      x: (clientX - rect.left) * dpr,
-      y: (clientY - rect.top) * dpr,
-    };
-  }
-
-  function drawLine(from: { x: number; y: number }, to: { x: number; y: number }) {
-    const ctx = getCanvasCtx();
-    if (!ctx) return;
-
-    ctx.save();
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-
-    if (tool === "eraser") {
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.strokeStyle = "rgba(0,0,0,1)";
-      ctx.lineWidth = penSize * 2;
-    } else {
-      ctx.globalCompositeOperation = "source-over";
-      ctx.strokeStyle = "rgba(255,255,255,0.92)";
-      ctx.lineWidth = penSize;
-    }
-
-    ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  function onPointerDown(e: any) {
-    if (finished) return;
-    e.preventDefault();
-    pushHistory();
-    const p = canvasPointFromEvent(e);
-    if (!p) return;
-    drawingRef.current.isDown = true;
-    drawingRef.current.last = p;
-  }
-
-  function onPointerMove(e: any) {
-    if (finished) return;
-    if (!drawingRef.current.isDown) return;
-    e.preventDefault();
-    const p = canvasPointFromEvent(e);
-    if (!p) return;
-    const last = drawingRef.current.last;
-    if (!last) {
-      drawingRef.current.last = p;
-      return;
-    }
-    drawLine(last, p);
-    drawingRef.current.last = p;
-  }
-
-  function onPointerUp(e: any) {
-    if (finished) return;
-    e.preventDefault();
-    drawingRef.current.isDown = false;
-    drawingRef.current.last = null;
-  }
-
-  // ----- Scoring -----
-  const score = useMemo(() => {
-    if (!finished) return null;
-
-    const diag = Math.sqrt(2);
-
-    const perCountry = countries.map((c) => {
-      const p = placements[c.id];
-      const [tx, ty] = c.target01;
-      if (!p) return { id: c.id, name: c.name, region: c.region, score: 0, err: 1 };
-      const err = dist([p.x, p.y], [tx, ty]) / diag;
-      const s = clamp(1 - err / 0.12, 0, 1);
-      return { id: c.id, name: c.name, region: c.region, score: s, err };
-    });
-
-    const placementPct = (perCountry.reduce((a, b) => a + b.score, 0) / perCountry.length) * 100;
-
-    const draw = drawCanvasRef.current;
-    const ref = refCanvasRef.current;
-    let drawingPct = 0;
-    let f1meta = { f1: 0, precision: 0, recall: 0 };
-
-    if (draw && ref) {
-      const dctx = draw.getContext("2d");
-      const rctx = ref.getContext("2d");
-      if (dctx && rctx) {
-        const user = dctx.getImageData(0, 0, draw.width, draw.height);
-        const refImg = rctx.getImageData(0, 0, ref.width, ref.height);
-        const userMask = imageDataToMask(user);
-        const refMask = imageDataToMask(refImg);
-        f1meta = maskF1(userMask, refMask);
-        drawingPct = f1meta.f1 * 100;
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Afrika Topographie Lernspiel</title>
+    <style>
+      :root {
+        color-scheme: dark;
       }
-    }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: #0b1020;
+        color: #e6edf7;
+      }
+      .app {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 1rem;
+      }
+      h1 {
+        margin: 0 0 0.75rem;
+        font-size: 1.45rem;
+      }
+      p {
+        margin: 0.25rem 0 1rem;
+        color: #a7b4ca;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 340px 1fr;
+        gap: 1rem;
+      }
+      .panel,
+      .map-wrap {
+        border: 1px solid #22314e;
+        border-radius: 14px;
+        background: #111a2d;
+      }
+      .panel {
+        padding: 0.9rem;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+      .chip {
+        border: 1px solid #33507a;
+        background: #17263f;
+        color: #dbe8ff;
+        border-radius: 999px;
+        padding: 0.35rem 0.7rem;
+        cursor: grab;
+        user-select: none;
+      }
+      .chip:active { cursor: grabbing; }
+      .map-wrap {
+        position: relative;
+        min-height: 620px;
+        overflow: hidden;
+      }
+      .map-wrap svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+        background: radial-gradient(circle at 45% 35%, #1b2e52, #0e1630 62%);
+      }
+      .drop-hint {
+        position: absolute;
+        inset: auto 0.8rem 0.8rem auto;
+        font-size: 0.82rem;
+        color: #a7b4ca;
+        background: #0d162b;
+        border: 1px solid #243963;
+        padding: 0.4rem 0.55rem;
+        border-radius: 8px;
+      }
+      .placed {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        border: 1px solid #2d79ff;
+        background: rgba(27, 92, 214, 0.25);
+        color: #dfe9ff;
+        border-radius: 999px;
+        padding: 0.2rem 0.5rem;
+        font-size: 0.8rem;
+        pointer-events: none;
+      }
+      .legend {
+        margin-top: 0.8rem;
+        font-size: 0.85rem;
+        color: #95a5c4;
+      }
+      @media (max-width: 900px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+        .map-wrap {
+          min-height: 540px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <h1>Afrika Topographie Lernspiel</h1>
+      <p>
+        Ziehe Länder aus der Liste auf die Karte. Diese Datei ist jetzt reines HTML/CSS/JS und
+        rendert ohne React/TypeScript-Fehler.
+      </p>
 
-    const total = 0.7 * placementPct + 0.3 * drawingPct;
-
-    const level =
-      total >= 85
-        ? "sehr stark"
-        : total >= 70
-          ? "gut"
-          : total >= 55
-            ? "okay"
-            : total >= 40
-              ? "ausbaufähig"
-              : "noch üben";
-
-    const worst = [...perCountry]
-      .sort((a, b) => a.score - b.score)
-      .slice(0, 6)
-      .map((x) => ({ ...x, pct: x.score * 100 }));
-
-    return { placementPct, drawingPct, total, level, perCountry, worst, f1meta };
-  }, [finished, placements, countries]);
-
-  function finish() {
-    setFinished(true);
-    setShowRegions(true);
-  }
-
-  function resetAll() {
-    setFinished(false);
-    setPlacements({});
-    clearDrawing();
-    setShowRegions(false);
-    setQuery("");
-  }
-
-  // ----- Render helpers -----
-  const regionColors: Record<string, string> = {
-    Nordafrika: "rgba(59,130,246,0.20)",
-    Westafrika: "rgba(34,197,94,0.18)",
-    Zentralafrika: "rgba(168,85,247,0.18)",
-    Ostafrika: "rgba(234,179,8,0.18)",
-    "Südliches Afrika": "rgba(239,68,68,0.15)",
-  };
-
-  function regionOverlay() {
-    if (!showRegions) return null;
-
-    const w = mapSize.w || 800;
-    const h = mapSize.h || 600;
-
-    const blocks = REGION_BLOCKS_VB.map((b) => {
-      const rect01 = viewBoxRectToContainer01(b.x, b.y, b.w, b.h, w, h, "bottom");
-      return { ...b, ...rect01 };
-    });
-
-    return (
-      <div className="absolute inset-0 pointer-events-none">
-        {blocks.map((b) => (
-          <div
-            key={b.r}
-            className="absolute rounded-2xl border border-white/10"
-            style={{
-              left: `${b.x * 100}%`,
-              top: `${b.y * 100}%`,
-              width: `${b.w * 100}%`,
-              height: `${b.h * 100}%`,
-              background: regionColors[b.r],
-            }}
-          >
-            <div className="absolute left-3 top-3 text-xs text-white/70">{b.r}</div>
+      <section class="layout">
+        <aside class="panel" aria-label="Länderliste">
+          <h2 style="font-size:1rem;margin:0 0 .65rem;">Länder</h2>
+          <div class="chips" id="country-list"></div>
+          <div class="legend">
+            <strong>Tipp:</strong> Du kannst ein Land mehrfach ziehen, um seine Position zu
+            korrigieren.
           </div>
-        ))}
-      </div>
-    );
-  }
+        </aside>
 
-  function solutionOverlay() {
-    if (!finished) return null;
+        <section class="map-wrap" id="map" aria-label="Afrika Karte" tabindex="0">
+          <svg viewBox="0 0 512 512" role="img" aria-label="Afrika Umriss">
+            <path
+              d="M263.1,474.6L255.7,469.6L254.5,471.1L253.2,470.0L253.8,465.9L249.9,462.3L252.9,458.5L252.6,453.5L244.3,435.4L237.8,428.3L234.9,421.0L231.3,404.4L231.6,394.9L216.2,367.7L216.2,354.7L220.7,340.5L227.5,332.9L227.8,326.7L223.0,316.3L225.7,312.8L219.2,300.0L218.6,295.0L204.4,278.8L199.4,269.6L202.3,267.2L204.1,260.1L202.9,257.2L206.5,247.1L204.1,243.9L198.4,239.9L185.1,241.7L177.4,231.0L171.5,229.0L153.1,233.1L140.4,239.0L126.2,236.0L107.3,241.4L98.7,236.9L85.7,226.3L78.6,223.3L74.3,209.6L68.6,206.8L63.7,202.2L63.3,199.1L59.1,198.5L56.0,194.8L57.2,188.0L52.5,181.2L57.2,175.6L60.2,160.2L57.2,154.3L59.3,149.0L54.8,143.7L55.4,138.1L67.0,121.5L69.3,112.0L74.3,108.5L76.7,102.3L85.7,98.6L95.6,88.7L95.0,79.5L98.6,70.7L103.8,65.5L112.8,60.6L116.6,50.3L120.6,47.2L125.0,52.8L134.8,51.6L140.1,53.7L145.7,48.9L150.5,48.3L159.0,43.0L174.7,40.4L181.8,42.4L186.8,39.5L190.4,40.9L193.3,39.5L195.7,41.2L206.3,37.7L210.2,41.5L213.1,39.5L214.2,40.5L210.6,46.7L214.5,53.8L208.0,60.9L209.3,62.8L213.4,63.1L214.9,66.1L220.8,69.0L227.0,68.4L236.5,71.4L239.4,77.9L247.4,79.7L257.5,85.6L260.1,85.3L263.5,81.3L262.7,74.2L272.3,68.1L279.6,69.3L282.3,73.2L291.2,74.1L293.2,77.6L298.0,76.7L313.9,81.7L325.2,76.7L330.5,77.3L334.6,80.3L343.5,79.1L348.1,91.3L344.8,102.9L343.5,103.9L340.8,101.8L340.4,103.5L352.8,126.2L352.5,132.4L359.3,137.8L362.3,156.7L370.0,163.8L373.8,175.9L382.5,180.8L394.2,192.7L395.7,196.9L393.6,198.7L400.6,205.3L407.6,202.6L412.4,203.5L417.1,200.6L426.0,200.6L433.7,198.5L435.7,196.1L440.0,197.8L437.7,211.7L422.0,238.9L410.6,251.4L394.2,263.1L385.0,274.9L378.2,280.5L372.0,291.8L370.0,299.2L374.1,304.5L372.6,312.5L375.3,321.0L379.7,324.6L379.1,338.5L381.2,348.8L373.1,360.8L360.4,366.7L355.0,373.5L346.9,379.6L346.3,381.9L351.3,392.6L351.0,404.7L347.3,408.7L335.4,414.7L336.6,421.8L333.6,432.2L326.8,438.7L321.2,449.0L303.6,465.4L296.5,466.6L290.6,470.2L278.2,468.7Z"
+              fill="#213459"
+              stroke="#9db2da"
+              stroke-width="3"
+            />
+          </svg>
+          <span class="drop-hint">Auf die Karte ziehen & ablegen</span>
+        </section>
+      </section>
+    </main>
 
-    return (
-      <div className="absolute inset-0 pointer-events-none">
-        {countries.map((c) => {
-          const p = placements[c.id];
-          const tx = c.target01[0] * 100;
-          const ty = c.target01[1] * 100;
-          const px = p ? p.x * 100 : null;
-          const py = p ? p.y * 100 : null;
+    <script>
+      const countries = [
+        "Marokko", "Algerien", "Tunesien", "Libyen", "Ägypten", "Senegal", "Mali",
+        "Elfenbeinküste", "Ghana", "Nigeria", "Kamerun", "Gabun", "Republik Kongo",
+        "DR Kongo", "Äthiopien", "Somalia", "Kenia", "Tansania", "Namibia",
+        "Botswana", "Simbabwe", "Südafrika"
+      ];
 
-          return (
-            <React.Fragment key={c.id}>
-              {/* Perfekter Punkt + Label */}
-              <div className="absolute -translate-x-1/2 -translate-y-1/2" style={{ left: `${tx}%`, top: `${ty}%` }}>
-                <div className="relative">
-                  <div className="w-3 h-3 rounded-full bg-white/90 shadow" />
-                  <div className="absolute left-1/2 -translate-x-1/2 -top-6 px-2 py-0.5 rounded-lg bg-zinc-950/70 border border-white/10 text-[10px] text-white/90 whitespace-nowrap">
-                    {c.name}
-                  </div>
-                </div>
-              </div>
+      const list = document.getElementById("country-list");
+      const map = document.getElementById("map");
+      const placements = new Map();
 
-              {/* Dein Punkt + Verbindung */}
-              {p && (
-                <>
-                  <div
-                    className="absolute -translate-x-1/2 -translate-y-1/2"
-                    style={{ left: `${px}%`, top: `${py}%` }}
-                    title={`Dein Platz: ${c.name}`}
-                  >
-                    <div className="w-3 h-3 rounded-full bg-emerald-400/90 shadow" />
-                  </div>
-                  <svg className="absolute inset-0" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    <line
-                      x1={px ?? 0}
-                      y1={py ?? 0}
-                      x2={tx}
-                      y2={ty}
-                      stroke="rgba(255,255,255,0.20)"
-                      strokeWidth={0.5}
-                      strokeDasharray="1 1"
-                    />
-                  </svg>
-                </>
-              )}
-            </React.Fragment>
-          );
-        })}
-      </div>
-    );
-  }
+      function renderCountryList() {
+        list.innerHTML = "";
+        for (const name of countries) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "chip";
+          button.draggable = true;
+          button.textContent = name;
+          button.addEventListener("dragstart", (e) => {
+            e.dataTransfer.setData("text/plain", name);
+            e.dataTransfer.effectAllowed = "copy";
+          });
+          list.appendChild(button);
+        }
+      }
 
-  const stats = score;
+      function drawPlacements() {
+        map.querySelectorAll(".placed").forEach((n) => n.remove());
+        for (const [name, pos] of placements.entries()) {
+          const tag = document.createElement("div");
+          tag.className = "placed";
+          tag.textContent = name;
+          tag.style.left = `${pos.x}px`;
+          tag.style.top = `${pos.y}px`;
+          map.appendChild(tag);
+        }
+      }
 
-  return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="mx-auto max-w-7xl p-4 md:p-6">
-        <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div>
-            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Afrika Topographie – Drag & Draw</h1>
-            <p className="text-sm text-zinc-400 mt-1">
-              Zieh die Länder-Karten auf die Karte. Zeichne dann grob Grenzen ein. Klick auf{" "}
-              <span className="text-zinc-200">Fertig</span> für einen Vergleich.
-            </p>
-          </div>
+      map.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      });
 
-          <div className="flex flex-wrap gap-2">
-            <button
-              className={`px-3 py-2 rounded-xl border ${
-                showRegions ? "border-white/30 bg-white/10" : "border-white/10 bg-white/5"
-              } hover:bg-white/10 transition`}
-              onClick={() => setShowRegions((s) => !s)}
-              disabled={finished}
-              title="Regionen-Hilfe ein/aus"
-            >
-              Regionen
-            </button>
+      map.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const name = e.dataTransfer.getData("text/plain");
+        if (!name) return;
 
-            <button
-              className={`px-3 py-2 rounded-xl border ${
-                tool === "pen" ? "border-white/30 bg-white/10" : "border-white/10 bg-white/5"
-              } hover:bg-white/10 transition`}
-              onClick={() => setTool("pen")}
-              disabled={finished}
-              title="Stift"
-            >
-              ✏️ Stift
-            </button>
+        const rect = map.getBoundingClientRect();
+        const x = Math.max(16, Math.min(rect.width - 16, e.clientX - rect.left));
+        const y = Math.max(16, Math.min(rect.height - 16, e.clientY - rect.top));
+        placements.set(name, { x, y });
+        drawPlacements();
+      });
 
-            <button
-              className={`px-3 py-2 rounded-xl border ${
-                tool === "eraser" ? "border-white/30 bg-white/10" : "border-white/10 bg-white/5"
-              } hover:bg-white/10 transition`}
-              onClick={() => setTool("eraser")}
-              disabled={finished}
-              title="Radierer"
-            >
-              🧽 Radierer
-            </button>
-
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-white/10 bg-white/5">
-              <span className="text-xs text-zinc-300">Größe</span>
-              <input
-                type="range"
-                min={2}
-                max={16}
-                value={penSize}
-                onChange={(e) => setPenSize(parseInt(e.target.value, 10))}
-                disabled={finished}
-              />
-            </div>
-
-            <button
-              className="px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition"
-              onClick={undo}
-              disabled={finished}
-              title="Undo"
-            >
-              ↩️ Undo
-            </button>
-
-            <button
-              className="px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition"
-              onClick={clearDrawing}
-              disabled={finished}
-              title="Zeichnung löschen"
-            >
-              🗑️ Zeichnung
-            </button>
-
-            {!finished ? (
-              <button
-                className="px-3 py-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 hover:bg-emerald-400/15 transition"
-                onClick={finish}
-                title="Auswertung anzeigen"
-              >
-                ✅ Fertig
-              </button>
-            ) : (
-              <button
-                className="px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition"
-                onClick={resetAll}
-                title="Neu starten"
-              >
-                🔄 Neu
-              </button>
-            )}
-          </div>
-        </header>
-
-        <main className="mt-5 grid grid-cols-1 lg:grid-cols-12 gap-4">
-          {/* Left: Cards */}
-          <section className="lg:col-span-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold">Länder-Karten</h2>
-              <div className="text-xs text-zinc-400">
-                {placedIds.size}/{countries.length} platziert
-              </div>
-            </div>
-
-            <div className="mt-3 flex gap-2">
-              <input
-                className="w-full rounded-xl bg-zinc-900/70 border border-white/10 px-3 py-2 text-sm outline-none focus:border-white/20"
-                placeholder="Suche (z.B. Nigeria, Nordafrika…)"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                disabled={finished}
-              />
-            </div>
-
-            <div className="mt-4 space-y-4">
-              {Object.entries(groupBy(filteredCards, (c) => c.region)).map(([region, list]) => (
-                <div key={region}>
-                  <div className="flex items-center justify-between">
-                    <div className="text-xs uppercase tracking-wide text-zinc-400">{region}</div>
-                    <div className="text-xs text-zinc-500">
-                      {list.filter((c) => placedIds.has(c.id)).length}/{list.length}
-                    </div>
-                  </div>
-
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    {list.map((c) => {
-                      const isPlaced = placedIds.has(c.id);
-                      return (
-                        <div
-                          key={c.id}
-                          draggable={!finished}
-                          onDragStart={(e) => onDragStart(e, c.id)}
-                          className={`select-none rounded-xl border px-3 py-2 text-sm cursor-grab active:cursor-grabbing transition ${
-                            isPlaced
-                              ? "border-emerald-400/30 bg-emerald-400/10 text-zinc-100"
-                              : "border-white/10 bg-zinc-900/40 hover:bg-zinc-900/60"
-                          } ${finished ? "opacity-80" : ""}`}
-                          title={isPlaced ? "Platziert – tippen zum Entfernen" : "Ziehen & auf Karte fallen lassen"}
-                          onClick={() => (isPlaced ? removePlacement(c.id) : null)}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="truncate">{c.name}</span>
-                            {isPlaced ? (
-                              <span className="text-xs text-emerald-300">✓</span>
-                            ) : (
-                              <span className="text-xs text-zinc-500">↘</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {finished && stats && (
-              <div className="mt-5 rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-semibold">Dein Ergebnis</div>
-                  <div className="text-xs text-zinc-400">ungefähr</div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-3 gap-2">
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                    <div className="text-xs text-zinc-400">Platzierung</div>
-                    <div className="text-xl font-semibold mt-1">{nicePct(stats.placementPct)}</div>
-                  </div>
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                    <div className="text-xs text-zinc-400">Grenzen</div>
-                    <div className="text-xl font-semibold mt-1">{nicePct(stats.drawingPct)}</div>
-                  </div>
-                  <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3">
-                    <div className="text-xs text-emerald-200/80">Gesamt</div>
-                    <div className="text-xl font-semibold mt-1">{nicePct(stats.total)}</div>
-                  </div>
-                </div>
-
-                <div className="mt-3 text-sm text-zinc-300">
-                  Einschätzung: <span className="text-zinc-100 font-medium">{stats.level}</span>
-                </div>
-
-                <div className="mt-3">
-                  <div className="text-xs uppercase tracking-wide text-zinc-400">Wo du am meisten verloren hast</div>
-                  <ul className="mt-2 space-y-1 text-sm">
-                    {stats.worst.map((w) => (
-                      <li key={w.id} className="flex items-center justify-between gap-2">
-                        <span className="truncate">{w.name}</span>
-                        <span className="text-xs text-zinc-400">{nicePct(w.pct)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                  <div className="mt-2 text-xs text-zinc-500">
-                    Tipp: Weiß = perfekt + Name, Grün = du. Die gestrichelte Linie zeigt die Abweichung.
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {!finished && (
-              <div className="mt-5 text-xs text-zinc-500 leading-relaxed">
-                <div className="font-medium text-zinc-400">So spielst du:</div>
-                <ol className="list-decimal pl-4 mt-2 space-y-1">
-                  <li>Karte ziehen → auf Afrika ablegen.</li>
-                  <li>Optional: Grenzen grob einzeichnen (Stift/Radierer).</li>
-                  <li>„Fertig“ für Vergleich + Score.</li>
-                </ol>
-              </div>
-            )}
-          </section>
-
-          {/* Right: Map */}
-          <section className="lg:col-span-8 rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Karte</h2>
-              <div className="text-xs text-zinc-400">Tipp: Starte ohne Regionen – und schalte sie später ein.</div>
-            </div>
-
-            <div className="mt-3 relative">
-              <div
-                ref={mapRef}
-                className="relative w-full h-[70vh] min-h-[520px] md:h-[76vh] lg:h-[820px] rounded-2xl overflow-hidden border border-white/10 bg-gradient-to-b from-zinc-900/60 to-zinc-900/20"
-                onDrop={onDrop}
-                onDragOver={onDragOver}
-              >
-                {/* Background SVG map */}
-                <svg
-                  className="absolute inset-0"
-                  viewBox="0 0 512 512"
-                  preserveAspectRatio="xMidYMax meet"
-                  aria-label="Afrika Umriss"
-                >
-                  <g transform={`translate(256 256) scale(${AFRICA_GROUP_SCALE}) translate(-256 -256)`}>
-                    <path
-                      d={AFRICA_SILHOUETTE_PATH}
-                      fill="none"
-                      stroke="rgba(255,255,255,0.26)"
-                      strokeWidth={1.5}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </g>
-                </svg>
-
-                {regionOverlay()}
-
-                {/* Placement labels */}
-                <div className="absolute inset-0 pointer-events-none">
-                  {countries.map((c) => {
-                    const p = placements[c.id];
-                    if (!p) return null;
-                    return (
-                      <div
-                        key={c.id}
-                        className="absolute -translate-x-1/2 -translate-y-1/2"
-                        style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%` }}
-                      >
-                        <div className="px-2 py-1 rounded-xl bg-zinc-950/70 border border-white/10 text-xs text-zinc-100 shadow">
-                          {c.name}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Drawing canvas */}
-                <canvas
-                  ref={drawCanvasRef}
-                  className={`absolute inset-0 ${finished ? "pointer-events-none" : ""}`}
-                  onMouseDown={onPointerDown}
-                  onMouseMove={onPointerMove}
-                  onMouseUp={onPointerUp}
-                  onMouseLeave={onPointerUp}
-                  onTouchStart={onPointerDown}
-                  onTouchMove={onPointerMove}
-                  onTouchEnd={onPointerUp}
-                />
-
-                {/* Hidden reference canvas for scoring */}
-                <canvas ref={refCanvasRef} className="hidden" />
-
-                {solutionOverlay()}
-              </div>
-
-              {finished && stats && (
-                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
-                    <div className="text-sm font-semibold">Vergleich – Grenzen</div>
-                    <div className="text-xs text-zinc-400 mt-1">
-                      Links: deine Zeichnung (auf Karte). Rechts: Referenz (vereinfacht). Score basiert auf Ähnlichkeit.
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      <MiniPreview source="user" drawCanvasRef={drawCanvasRef} />
-                      <MiniPreview source="ref" refCanvasRef={refCanvasRef} />
-                    </div>
-                    <div className="mt-3 text-xs text-zinc-500">
-                      Hinweis: Referenz ist absichtlich grob, damit du Feedback bekommst, ohne pixelperfekt zeichnen zu müssen.
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
-                    <div className="text-sm font-semibold">Nächste Runde</div>
-                    <ul className="mt-2 text-sm text-zinc-300 space-y-1 list-disc pl-4">
-                      <li>Erst 10 Länder → bis 90% Platzierung.</li>
-                      <li>Dann auf 15–20 erhöhen.</li>
-                      <li>Grenzen: erst Umriss, dann grobe Trennlinien.</li>
-                      <li>
-                        Erweiterungsidee: Für echte Länder-Grenzen kann man GeoJSON (z.B. Natural Earth) einbinden und daraus echte Polygone als
-                        Drop-Zonen + Referenzgrenzen zeichnen.
-                      </li>
-                    </ul>
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        className="px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition"
-                        onClick={resetAll}
-                      >
-                        🔄 Neu starten
-                      </button>
-                      <button
-                        className="px-3 py-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 hover:bg-emerald-400/15 transition"
-                        onClick={() => setFinished(false)}
-                      >
-                        ✏️ Weiter üben
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-        </main>
-
-        <footer className="mt-6 text-xs text-zinc-500">
-          <div>
-            Erweiterungsidee: Für echte Länder-Grenzen kann man GeoJSON (z.B. Natural Earth) einbinden und daraus echte Polygone als Drop-Zonen +
-            Referenzgrenzen zeichnen.
-          </div>
-        </footer>
-      </div>
-    </div>
-  );
-}
-
-function MiniPreview({
-  source,
-  drawCanvasRef,
-  refCanvasRef,
-}: {
-  source: "user" | "ref";
-  drawCanvasRef?: React.RefObject<HTMLCanvasElement | null>;
-  refCanvasRef?: React.RefObject<HTMLCanvasElement | null>;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    const out = canvasRef.current;
-    if (!out) return;
-
-    const src = source === "user" ? drawCanvasRef?.current : refCanvasRef?.current;
-    if (!src) return;
-
-    const w = 380;
-    const h = 260;
-    out.width = w;
-    out.height = h;
-
-    const octx = out.getContext("2d");
-    if (!octx) return;
-
-    octx.clearRect(0, 0, w, h);
-    octx.fillStyle = "rgba(9,9,11,1)";
-    octx.fillRect(0, 0, w, h);
-
-    const sx = src.width;
-    const sy = src.height;
-
-    if (sx <= 0 || sy <= 0) return;
-
-    const scale = Math.min(w / sx, h / sy);
-    const dx = (w - sx * scale) / 2;
-    const dy = (h - sy * scale) / 2;
-
-    octx.globalAlpha = 1;
-    octx.drawImage(src, dx, dy, sx * scale, sy * scale);
-
-    octx.strokeStyle = "rgba(255,255,255,0.12)";
-    octx.lineWidth = 2;
-    octx.strokeRect(1, 1, w - 2, h - 2);
-  }, [source, drawCanvasRef, refCanvasRef]);
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-      <div className="text-xs text-zinc-400">{source === "user" ? "Dein Bild" : "Perfekt (Referenz)"}</div>
-      <canvas ref={canvasRef} className="mt-2 w-full rounded-xl" />
-    </div>
-  );
-}
-
-// ---------------------------
-// Mini-Tests (ohne Test-Framework)
-// ---------------------------
-(function selfTest() {
-  try {
-    console.assert(clamp(5, 0, 10) === 5, "clamp basic");
-    console.assert(clamp(-1, 0, 10) === 0, "clamp low");
-    console.assert(clamp(99, 0, 10) === 10, "clamp high");
-
-    console.assert(Math.abs(dist([0, 0], [1, 0]) - 1) < 1e-9, "dist 1");
-    console.assert(Math.abs(dist([0, 0], [1, 1]) - Math.sqrt(2)) < 1e-9, "dist diag");
-
-    // maskF1 sanity
-    const mk = (arr: number[], w: number, h: number): Mask => ({ mask: Uint8Array.from(arr), width: w, height: h });
-    const a = mk([1, 0, 0, 1], 2, 2);
-    const b = mk([1, 0, 0, 1], 2, 2);
-    const c = mk([0, 1, 1, 0], 2, 2);
-    console.assert(Math.abs(maskF1(a, b).f1 - 1) < 1e-9, "maskF1 perfect");
-    console.assert(maskF1(a, c).f1 === 0, "maskF1 disjoint");
-
-    // projection sanity: Marokko sollte links von Ägypten liegen; Südafrika weiter unten als Marokko
-    const [mx, my] = lonLatToViewBoxXY(-7.1, 31.8);
-    const [ex] = lonLatToViewBoxXY(30.8, 26.8);
-    const [, sy] = lonLatToViewBoxXY(24.0, -29.0);
-    console.assert(mx < ex, "projection west/east");
-    console.assert(sy > my, "projection north/south");
-
-    // viewBox->container range
-    const [cx, cy] = viewBoxPointToContainer01(256, 256, 800, 600, "bottom");
-    console.assert(cx >= 0 && cx <= 1 && cy >= 0 && cy <= 1, "viewBoxToContainer range bottom");
-
-    const [cx2, cy2] = viewBoxPointToContainer01(256, 256, 800, 600, "center");
-    console.assert(cx2 >= 0 && cx2 <= 1 && cy2 >= 0 && cy2 <= 1, "viewBoxToContainer range center");
-
-    // rect conversion
-    const r = viewBoxRectToContainer01(10, 10, 50, 70, 900, 700, "bottom");
-    console.assert(r.w >= 0 && r.h >= 0, "rect nonnegative");
-  } catch {
-    // ignore
-  }
-})();
-
-/**
- * Frage (damit ich es richtig umstelle, falls du willst):
- * Sollen die weißen Punkte die HAUPTSTÄDTE markieren oder die ungefähre Mitte des Landes?
- */
+      renderCountryList();
+    </script>
+  </body>
+</html>
