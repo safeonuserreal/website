@@ -524,6 +524,7 @@ function AfrikaTopographieLernspiel() {
     }
     function resetAll() {
         setFinished(false);
+        setShowReferenceOverlay(false);
         setPlacements({});
         clearDrawing();
         setShowRegions(false);
@@ -675,6 +676,7 @@ function AfrikaTopographieLernspiel() {
                             React.createElement("canvas", { ref: refCanvasRef, className: "hidden" }),
                             solutionOverlay()),
                         finished && stats && (React.createElement("div", { className: "mt-4 grid grid-cols-1 gap-3" },
+
                             React.createElement("div", { className: "rounded-2xl border border-white/10 bg-zinc-900/40 p-4" },
                                 React.createElement("div", { className: "text-sm font-semibold" }, "N\u00E4chste Runde"),
                                 React.createElement("ul", { className: "mt-2 text-sm text-zinc-300 space-y-1 list-disc pl-4" },
